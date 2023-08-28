@@ -1,0 +1,217 @@
+import abc
+import numpy as np
+from scipy import stats
+
+
+def enum(**enums):
+    """Utility function to create enumerations."""
+    return type('Enum', (), enums)
+
+
+# Enumerations
+OptionType = enum(CALL='call', PUT='put')
+OptionExerciseType = enum(EUROPEAN='european', AMERICAN='american')
+OptionModel = enum(BLACK_SCHOLES='black_scholes', BINOMIAL_TREE='binomial_tree', MONTE_CARLO='monte_carlo')
+OptionMeasure = enum(VALUE='value', DELTA='delta', THETA='theta', RHO='rho', VEGA='vega', GAMMA='gamma')
+
+
+class Option(abc.ABC):
+    def __init__(self, opt_type, S0, K, T, r, sigma, N, exer_type):
+        """Initialize an Option object."""
+        self.opt_type = opt_type
+        self.S0 = S0
+        self.K = K
+        self.T = T
+        self.r = r
+        self.sigma = sigma
+        self.N = N
+        self.exer_type = exer_type
+        self.model_cache = {}
+        self.model_cache_param_hashes = {}
+
+    @abc.abstractmethod
+    def run_model(self, model):
+        """Abstract method to run the specified option pricing model."""
+        pass
+
+    def param_hash(self):
+        """Compute a hash based on the option parameters."""
+        return hash((self.opt_type, self.S0, self.K, self.T, self.r, self.sigma, self.N, self.exer_type))
+
+# Utility functions for Black-Scholes model
+
+def black_scholes_price(S0, K, T, r, sigma, opt_type):
+    """Compute the Black-Scholes price for a European option."""
+    d1 = (np.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    if opt_type == OptionType.CALL:
+        return S0 * stats.norm.cdf(d1) - K * np.exp(-r * T) * stats.norm.cdf(d2)
+    elif opt_type == OptionType.PUT:
+        return K * np.exp(-r * T) * stats.norm.cdf(-d2) - S0 * stats.norm.cdf(-d1)
+
+def black_scholes_greeks(S0, K, T, r, sigma, opt_type):
+    """Compute the Black-Scholes greeks for a European option."""
+    d1 = (np.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    if opt_type == OptionType.CALL:
+        delta = stats.norm.cdf(d1)
+        gamma = stats.norm.pdf(d1) / (S0 * sigma * np.sqrt(T))
+        theta = - (S0 * sigma * stats.norm.pdf(d1) / (2 * np.sqrt(T))) - r * K * np.exp(-r * T) * stats.norm.cdf(d2)
+        vega = S0 * np.sqrt(T) * stats.norm.pdf(d1)
+        rho = K * T * np.exp(-r * T) * stats.norm.cdf(d2)
+    elif opt_type == OptionType.PUT:
+        delta = -stats.norm.cdf(-d1)
+        gamma = stats.norm.pdf(d1) / (S0 * sigma * np.sqrt(T))
+        theta = - (S0 * sigma * stats.norm.pdf(d1) / (2 * np.sqrt(T))) + r * K * np.exp(-r * T) * stats.norm.cdf(-d2)
+        vega = S0 * np.sqrt(T) * stats.norm.pdf(d1)
+        rho = -K * T * np.exp(-r * T) * stats.norm.cdf(-d2)
+    
+    return {
+        OptionMeasure.VALUE: black_scholes_price(S0, K, T, r, sigma, opt_type),
+        OptionMeasure.DELTA: delta,
+        OptionMeasure.GAMMA: gamma,
+        OptionMeasure.THETA: theta,
+        OptionMeasure.VEGA: vega,
+        OptionMeasure.RHO: rho,
+    }
+
+
+def binomial_tree_trigeorgis(S0, K, T, r, sigma, N, opt_type):
+    """Compute the price of an American option using the Binomial Tree Trigeorgis model with adjusted backward induction."""
+    dt = T / N
+    df = np.exp(-r * dt)
+    
+    # Parameters from the uploaded notebook
+    nu = r - 0.5 * sigma**2
+    dxu = np.sqrt(sigma**2 * dt + nu**2 * dt**2)
+    dxd = -dxu
+    pu = 0.5 + 0.5 * nu * dt / dxu
+    pd = 1 - pu
+    
+    # Stock price tree
+    stock = np.zeros((N + 1, N + 1))
+    stock[0, 0] = S0
+    for j in range(1, N + 1):
+        stock[0, j] = stock[0, j - 1] * np.exp(dxu)
+        for i in range(1, j + 1):
+            stock[i, j] = stock[i - 1, j - 1] * np.exp(dxd)
+    
+    # Option price tree
+    option = np.zeros((N + 1, N + 1))
+    
+    # Terminal values
+    if opt_type == OptionType.CALL:
+        option[:, N] = np.maximum(0, stock[:, N] - K)
+    elif opt_type == OptionType.PUT:
+        option[:, N] = np.maximum(0, K - stock[:, N])
+    
+    # Backward induction
+    for j in range(N - 1, -1, -1):
+        for i in range(j + 1):
+            if opt_type == OptionType.CALL:
+                option[i, j] = max(stock[i, j] - K, df * (pu * option[i, j + 1] + pd * option[i + 1, j + 1]))
+            elif opt_type == OptionType.PUT:
+                option[i, j] = max(K - stock[i, j], df * (pu * option[i, j + 1] + pd * option[i + 1, j + 1]))
+    
+    return option[0, 0]
+
+# Utility functions for Monte Carlo simulation
+
+def monte_carlo_price(S0, K, T, r, sigma, N, M, opt_type):
+    """Compute the option price using Monte Carlo simulation."""
+    dt = T / N
+    paths = np.zeros((N + 1, M))
+    paths[0] = S0
+    
+    for t in range(1, N + 1):
+        rand = np.random.standard_normal(M)
+        paths[t] = paths[t - 1] * np.exp((r - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * rand)
+    
+    if opt_type == OptionType.CALL:
+        payoff = np.maximum(paths[-1] - K, 0)
+    elif opt_type == OptionType.PUT:
+        payoff = np.maximum(K - paths[-1], 0)
+    
+    return np.exp(-r * T) * np.sum(payoff) / M
+
+def monte_carlo_greeks(S0, K, T, r, sigma, N, M, opt_type):
+    """Compute the greeks using Monte Carlo simulation with finite differences."""
+    # Price and greeks using central differences
+    price = monte_carlo_price(S0, K, T, r, sigma, N, M, opt_type)
+    
+    delta_fd = 0.01 * S0
+    delta_plus = monte_carlo_price(S0 + delta_fd, K, T, r, sigma, N, M, opt_type)
+    delta_minus = monte_carlo_price(S0 - delta_fd, K, T, r, sigma, N, M, opt_type)
+    delta = (delta_plus - delta_minus) / (2 * delta_fd)
+    
+    gamma = (delta_plus - 2 * price + delta_minus) / (delta_fd**2)
+    
+    theta_fd = 0.01 * T
+    theta_minus = monte_carlo_price(S0, K, T - theta_fd, r, sigma, N, M, opt_type)
+    theta = (price - theta_minus) / theta_fd
+    
+    vega_fd = 0.01 * sigma
+    vega_plus = monte_carlo_price(S0, K, T, r, sigma + vega_fd, N, M, opt_type)
+    vega = (vega_plus - price) / vega_fd
+    
+    rho_fd = 0.01 * r
+    rho_plus = monte_carlo_price(S0, K, T, r + rho_fd, sigma, N, M, opt_type)
+    rho = (rho_plus - price) / rho_fd
+    
+    return {
+        OptionMeasure.VALUE: price,
+        OptionMeasure.DELTA: delta,
+        OptionMeasure.GAMMA: gamma,
+        OptionMeasure.THETA: theta,
+        OptionMeasure.VEGA: vega,
+        OptionMeasure.RHO: rho,
+    }
+
+class EuropeanOption(Option):
+    """EuropeanOption class derived from the Option abstract class."""
+    
+    def run_model(self, model):
+        """Run the specified option pricing model for European options."""
+        if model == OptionModel.BLACK_SCHOLES:
+            return black_scholes_greeks(self.S0, self.K, self.T, self.r, self.sigma, self.opt_type)
+        elif model == OptionModel.MONTE_CARLO:
+            return monte_carlo_greeks(self.S0, self.K, self.T, self.r, self.sigma, self.N, 1000, self.opt_type)
+        else:
+            raise ValueError("Invalid model for European option.")
+            
+
+class AmericanOption(Option):
+    """AmericanOption class derived from the Option abstract class."""
+    
+    def run_model(self, model):
+        """Run the specified option pricing model for American options."""
+        if model == OptionModel.BINOMIAL_TREE:
+            price = binomial_tree_trigeorgis(self.S0, self.K, self.T, self.r, self.sigma, self.N, self.opt_type)
+            return {OptionMeasure.VALUE: price}  # For simplicity, only value is returned for Binomial Tree in this iteration
+        elif model == OptionModel.MONTE_CARLO:
+            return monte_carlo_greeks(self.S0, self.K, self.T, self.r, self.sigma, self.N, 1000, self.opt_type)
+        else:
+            raise ValueError("Invalid model for American option.")
+
+
+# Example computations for both call and put options using the derived classes
+
+# European Call Option using Black-Scholes
+euro_call_bs = EuropeanOption(OptionType.CALL, 100, 100, 1, 0.05, 0.2, 100, OptionExerciseType.EUROPEAN)
+euro_call_bs_result = euro_call_bs.run_model(OptionModel.BLACK_SCHOLES)
+
+# European Put Option using Monte Carlo
+euro_put_mc = EuropeanOption(OptionType.PUT, 100, 100, 1, 0.05, 0.2, 100, OptionExerciseType.EUROPEAN)
+euro_put_mc_result = euro_put_mc.run_model(OptionModel.MONTE_CARLO)
+
+# American Call Option using Binomial Tree Trigeorgis
+amer_call_btt = AmericanOption(OptionType.CALL, 100, 100, 1, 0.05, 0.2, 100, OptionExerciseType.AMERICAN)
+amer_call_btt_result = amer_call_btt.run_model(OptionModel.BINOMIAL_TREE)
+
+# American Put Option using Monte Carlo
+amer_put_mc = AmericanOption(OptionType.PUT, 100, 100, 1, 0.05, 0.2, 100, OptionExerciseType.AMERICAN)
+amer_put_mc_result = amer_put_mc.run_model(OptionModel.MONTE_CARLO)
+
+print(euro_call_bs_result, euro_put_mc_result, amer_call_btt_result, amer_put_mc_result)
