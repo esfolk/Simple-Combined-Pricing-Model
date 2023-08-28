@@ -22,9 +22,10 @@ Greeks Calculation:
 Added functionality to compute the Greeks (Delta, Gamma, Theta, Vega, Rho) for the option, providing insights into the option's sensitivity to various factors.
 
 ## Example Computations:
+
 The code includes example computations for both call and put options, demonstrating the accurate pricing and Greeks computation for the options using the aforementioned models.
 
 ## Future Work:
-Extend the code to handle more exotic types of options.
-Implement more sophisticated models for option pricing.
-Optimize the code for performance, especially for larger binomial trees and Monte Carlo simulations.
+- Extend the code to handle more exotic types of options.
+- Implement more sophisticated models for option pricing.
+- Optimize the code for performance, especially for larger binomial trees and Monte Carlo simulations.
